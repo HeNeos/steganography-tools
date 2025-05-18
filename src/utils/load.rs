@@ -2,13 +2,12 @@ use image::{imageops::FilterType, DynamicImage, GenericImageView};
 
 const MAX_HEIGHT: u32 = 720;
 
-pub fn load_image(path: &str) -> DynamicImage {
-    let img: DynamicImage = image::open(path).expect("Failed to open image");
-    img
+pub fn load_image(path: &str) -> Result<DynamicImage, String> {
+    image::open(path).map_err(|e| format!("Failed to open image '{}': {}", path, e))
 }
 
 pub fn load_image_and_resize(path: &str) -> DynamicImage {
-    let img = load_image(path);
+    let img = load_image(path).expect("Failed to open image");
     let (width, height) = img.dimensions();
 
     let (new_width, new_height) = if height > MAX_HEIGHT {

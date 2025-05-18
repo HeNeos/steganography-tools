@@ -1,75 +1,70 @@
+use crate::content::audio::AudioContent;
+use crate::content::image::ImageContent;
+use crate::traits::{ContentType, Decodable};
 use image::DynamicImage;
-use std::fs::File;
-use std::io::Write;
+use std::fs as std_fs;
+use std::path::Path as StdPath;
 
-pub fn decode_lsb(steg_image: &DynamicImage) -> Vec<u8> {
+pub fn decode_lsb(steg_image: &DynamicImage) -> Result<(Vec<u8>, ContentType), String> {
     let steg_rgb = steg_image.to_rgb8();
-    let steg_flat_samples = steg_rgb.as_flat_samples();
-    let steg_bytes = steg_flat_samples.samples;
+    let steg_bytes = steg_rgb.as_flat_samples().samples;
 
-    let mut current_steg_byte_index = 0;
-    let bits_in_u8 = 8;
+    if steg_bytes.len() < 40 {
+        return Err("Image too small to contain hidden data".to_string());
+    }
 
-    let mut len_bytes_arr = [0u8; 4];
+    let mut current_index = 0;
+
+    let mut content_type_byte = 0u8;
+    for bit_pos in 0..8 {
+        if current_index >= steg_bytes.len() {
+            return Err("Corrupted data: unexpected end while reading content type".to_string());
+        }
+        let bit = steg_bytes[current_index] & 1;
+        content_type_byte |= bit << (7 - bit_pos);
+        current_index += 1;
+    }
+
+    let content_type = ContentType::from_u8(content_type_byte)
+        .ok_or_else(|| format!("Invalid content type byte: {}", content_type_byte))?;
+    println!("Detected content type: {:?}", content_type);
+
+    let mut len_bytes = [0u8; 4];
     for i in 0..4 {
-        let mut current_byte_of_len = 0u8;
-        for bit_pos in 0..bits_in_u8 {
-            let lsb = steg_bytes[current_steg_byte_index] & 1;
-            current_byte_of_len |= lsb << (7 - bit_pos);
-            current_steg_byte_index += 1;
-        }
-        len_bytes_arr[i] = current_byte_of_len;
-    }
-    let secret_data_len = u32::from_be_bytes(len_bytes_arr) as usize;
-
-    let mut secret_data = Vec::with_capacity(secret_data_len);
-    for _ in 0..secret_data_len {
-        let mut current_secret_byte = 0u8;
-        for bit_pos in 0..bits_in_u8 {
-            let lsb = steg_bytes[current_steg_byte_index] & 1;
-            current_secret_byte |= lsb << (7 - bit_pos);
-            current_steg_byte_index += 1;
-        }
-        secret_data.push(current_secret_byte);
-    }
-
-    secret_data
-}
-
-pub fn reconstruct_image(data: &[u8], output_file: &str) {
-    let mut width_bytes = [0u8; 4];
-    let mut height_bytes = [0u8; 4];
-
-    width_bytes.copy_from_slice(&(data[0..4]));
-    height_bytes.copy_from_slice(&(data[4..8]));
-
-    let width = u32::from_be_bytes(width_bytes);
-    let height = u32::from_be_bytes(height_bytes);
-
-    let pixels = &data[8..];
-
-    match image::RgbImage::from_raw(width, height, pixels.to_vec()) {
-        Some(img) => match DynamicImage::ImageRgb8(img).save(output_file) {
-            Ok(_) => {
-                println!("Image extracted successfully: '{}'", output_file)
+        for bit_pos in 0..8 {
+            if current_index >= steg_bytes.len() {
+                return Err("Corrupted data: unexpected end while reading data length".to_string());
             }
-            Err(e) => {
-                eprintln!("Error saving image to '{}': {}", output_file, e)
-            }
-        },
-        None => {
-            eprintln!("Could not construct image, saving raw data instead");
-            match File::create(output_file) {
-                Ok(mut file) => match file.write_all(data) {
-                    Ok(_) => println!("Raw data saved to: '{}'", output_file),
-                    Err(e) => {
-                        eprintln!("Error writing data to '{}': {}", output_file, e)
-                    }
-                },
-                Err(e) => {
-                    eprintln!("Error creating output file '{}': {}", output_file, e)
-                }
-            }
+            let bit = steg_bytes[current_index] & 1;
+            len_bytes[i] |= bit << (7 - bit_pos);
+            current_index += 1;
         }
     }
+    let data_len = u32::from_be_bytes(len_bytes) as usize;
+    println!("Detected data length: {} bytes", data_len);
+
+    if (current_index / 8 + data_len) > steg_bytes.len() / 8 + 1 {
+        if current_index + data_len * 8 > steg_bytes.len() {
+            return Err(format!(
+                "Corrupted data: claimed data length {} ({} bits) exceeds available image data ({} bits remaining from current_index)",
+                data_len, data_len * 8, steg_bytes.len() - current_index
+            ));
+        }
+    }
+
+    let mut data = Vec::with_capacity(data_len);
+    for _ in 0..data_len {
+        let mut byte = 0u8;
+        for bit_pos in 0..8 {
+            if current_index >= steg_bytes.len() {
+                return Err("Corrupted data: unexpected end while reading hidden data".to_string());
+            }
+            let bit = steg_bytes[current_index] & 1;
+            byte |= bit << (7 - bit_pos);
+            current_index += 1;
+        }
+        data.push(byte);
+    }
+
+    Ok((data, content_type))
 }

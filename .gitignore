@@ -1,4 +1,5 @@
 /target
 *.jpg
 *.png
+*.mp3
 .bacon-locations
